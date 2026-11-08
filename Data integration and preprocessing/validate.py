@@ -1,5 +1,6 @@
 
 import json
+import re
 import sys
 
 import numpy as np
@@ -57,6 +58,16 @@ def run_checks(m, f, feat_report):
     fm_seasons = played[played.season.between("2011/12", CURRENT_SEASON)]
     check("FotMob joined for every match since 2011/12", fm_seasons.fm_match_id.notna().all(),
           f"{fm_seasons.fm_match_id.isna().sum()} without FotMob")
+    manifest_file = OUT_DIR / "source_manifest.json"
+    check("source_manifest.json exists (raw files pinned to a HF revision)", manifest_file.exists())
+    if manifest_file.exists():
+        man = json.loads(manifest_file.read_text(encoding="utf-8"))
+        check("HF revision is a 40-hex commit", re.fullmatch(r"[0-9a-f]{40}", man.get("hf_revision") or "") is not None,
+              str(man.get("hf_revision")))
+        diff = [h["relative_path"] for h in man["historical_raw_data"] if not h["same_as_hf"]]
+        check("historical raw files identical to raw_data/ on HF (= Raw Storage)", not diff, str(diff))
+        check("running season read from the crawler output", len(man["crawler_files"]) > 0,
+              f"{len(man['crawler_files'])} files")
     mism = pd.read_csv(OUT_DIR / "mismatches.csv")
     check("no score / date conflicts between sources", mism.empty, str(mism.groupby(["source", "issue"]).size()
                                                                        .to_dict()) if len(mism) else "")
@@ -91,8 +102,28 @@ def run_checks(m, f, feat_report):
     check("elo_home_win_prob in [0, 1]", f.elo_home_win_prob.between(0, 1).all())
     probs = f[["odds_home_prob", "odds_draw_prob", "odds_away_prob"]].dropna()
     check("odds probabilities sum to 1", np.allclose(probs.sum(axis=1), 1))
+    for side in ["home", "away"]:
+        across = f[f"{side}_rest_days"].notna() & f[f"{side}_played"].eq(0)
+        check(f"{side}_rest_days only between matches of the same season", not across.any(),
+              f"{int(across.sum())} first-of-season rows with a value")
     pos = pd.concat([f.home_position, f.away_position]).dropna()
     check("league position in [1, 20]", pos.between(1, 20).all())
+    # history behind the form averages (asked for by the EDA report)
+    for side in ["home", "away"]:
+        n, nxg, nfm = f[f"{side}_window_n5"], f[f"{side}_xg_n5"], f[f"{side}_fm_n5"]
+        check(f"{side}_window_n5 in [0, 5], xg_n5 / fm_n5 <= window_n5",
+              n.between(0, 5).all() and (nxg <= n).all() and (nfm <= n).all())
+        check(f"{side}_xg5 is empty exactly when {side}_xg_n5 = 0", (f[f"{side}_xg5"].isna() == nxg.eq(0)).all())
+        check(f"{side}_points5 is empty exactly when {side}_window_n5 = 0",
+              (f[f"{side}_points5"].isna() == n.eq(0)).all())
+        check(f"{side}_form_age_days >= 0", f[f"{side}_form_age_days"].dropna().ge(0).all())
+    promoted = pd.concat([f[["season", "home_club_id", "home_promoted"]].set_axis(["season", "club", "p"], axis=1),
+                          f[["season", "away_club_id", "away_promoted"]].set_axis(["season", "club", "p"], axis=1)])
+    per_season = promoted[promoted.p.eq(1)].groupby("season").club.nunique()
+    later = sorted(f.season.unique())[1:]
+    check("3 promoted clubs in every season after the first", per_season.reindex(later, fill_value=0).eq(3).all(),
+          str(per_season[per_season != 3].to_dict()))
+    check("league_home_adv380 in [-1, 1]", f.league_home_adv380.dropna().between(-1, 1).all())
     return checks, warnings
 
 

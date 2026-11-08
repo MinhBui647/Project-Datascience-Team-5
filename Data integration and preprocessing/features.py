@@ -8,6 +8,7 @@ import pandas as pd
 from integrate import OUT_DIR
 
 WINDOW = 5
+LEAGUE_WINDOW = 380                                                    # about one season of league-wide results
 ELO_START, ELO_NEW_TEAM, ELO_K, ELO_HOME_ADV, ELO_CARRY = 1500, 1450, 20, 65, 0.8
 ID_COLS = ["match_id", "season", "date", "kickoff_time", "gameweek", "home_club_id", "home_team",
            "away_club_id", "away_team", "status", "provisional", "postponed"]
@@ -22,7 +23,9 @@ FM_FORM = {
 }
 FORM_KEYS = ["form", "wins5", "draws5", "losses5", "points5", "goals_for5", "goals_against5", "shots_on_target5",
              "xg5", "xga5", "opp_elo5", "perf_vs_elo5", *FM_FORM, "played", "ppg", "goals_for_pg",
-             "goals_against_pg", "rest_days"]
+             "goals_against_pg", "rest_days", "window_n5", "xg_n5", "fm_n5", "form_age_days", "promoted"]
+COUNT_KEYS = ["wins5", "draws5", "losses5", "played", "rest_days", "window_n5", "xg_n5", "fm_n5", "form_age_days",
+              "promoted"]
 DIFF_KEYS = ["points5", "goals_for5", "goals_against5", "shots_on_target5", "xg5", "xga5", "ppg", "perf_vs_elo5",
              "possession5", "big_chances5", "big_chances_against5", "box_touches5", "xgot5", "xgot_against5"]
 
@@ -76,7 +79,16 @@ def team_features(st, venue, date, postponed):
         "ppg": st.pts / st.played if st.played else np.nan,
         "goals_for_pg": st.gf / st.played if st.played else np.nan,
         "goals_against_pg": st.ga / st.played if st.played else np.nan,
-        "rest_days": (date - st.last_date).days if st.last_date is not None and not postponed else np.nan,
+        # only within a season: before a team's first match of the season the gap is the summer break
+        # (or years outside the Premier League), not rest between two matches
+        "rest_days": (date - st.last_date).days if st.played and not postponed else np.nan,
+        # how much history the *5 averages stand on (EDA: a window can hold fewer than 5 matches,
+        # and xG / FotMob averages skip matches without that statistic)
+        "window_n5": len(last),
+        "xg_n5": sum(not pd.isna(m["xg"]) for m in last),
+        "fm_n5": sum(not pd.isna(m["possession5"]) for m in last),
+        # age of the oldest match in the window: large for a team back in the league after years away
+        "form_age_days": (date - last[0]["date"]).days if last and not postponed else np.nan,
     }
     return f
 
@@ -108,10 +120,13 @@ def build_features(matches):
     df = pd.concat([df[df.is_played], df[~df.is_played]]).reset_index(drop=True)
 
     season_teams = df.groupby("season").apply(lambda g: sorted(set(g.home_club_id) | set(g.away_club_id)))
+    seasons = sorted(season_teams.index)
+    prev_teams = {s: set(season_teams[p]) for p, s in zip(seasons, seasons[1:])}  # known before the season starts
     first_season = df.season.min()
     state = defaultdict(TeamState)
     elo, elo_season = {}, None
     h2h = defaultdict(lambda: deque(maxlen=WINDOW))
+    recent = deque(maxlen=LEAGUE_WINDOW)                                  # H/D/A of the latest league matches
     rows = []
 
     for r in df.itertuples(index=False):
@@ -134,10 +149,14 @@ def build_features(matches):
         for side, team in [("home", home), ("away", away)]:
             for k, v in team_features(state[team], side, r.match_dt, postponed).items():
                 f[f"{side}_{k}"] = v
+            f[f"{side}_promoted"] = int(team not in prev_teams[season]) if season in prev_teams else np.nan
         past = list(h2h[frozenset((home, away))])
         f["h2h_matches"] = len(past)
         f["h2h_home_points"] = mean(points(hg, ag) if h == home else points(ag, hg) for h, hg, ag in past)
         f["h2h_home_goal_diff"] = mean((hg - ag) if h == home else (ag - hg) for h, hg, ag in past)
+        # home advantage of the current era (EDA H5): home win rate − away win rate over the last 380 matches
+        f["league_home_adv380"] = ((recent.count("H") - recent.count("A")) / LEAGUE_WINDOW
+                                   if len(recent) == LEAGUE_WINDOW else np.nan)
         rows.append(f)
 
         if not r.is_played or pd.isna(r.home_goals) or pd.isna(r.away_goals):
@@ -150,7 +169,7 @@ def build_features(matches):
                 ("home", "away", home, hg, ag, r.home_shots_on_target, r.home_xg, r.away_xg, ra, surprise),
                 ("away", "home", away, ag, hg, r.away_shots_on_target, r.away_xg, r.home_xg, rh, -surprise)]:
             st = state[team]
-            m = {"res": "W" if gf > ga else "D" if gf == ga else "L", "pts": points(gf, ga),
+            m = {"res": "W" if gf > ga else "D" if gf == ga else "L", "pts": points(gf, ga), "date": r.match_dt,
                  "gf": gf, "ga": ga, "sot": sot, "xg": xg, "xga": xga, "opp_elo": opp_elo, "perf_vs_elo": perf,
                  **{k: getattr(r, f"{side if who == 'for' else opp}_{col}") for k, (col, who) in FM_FORM.items()}}
             st.last.append(m)
@@ -158,6 +177,7 @@ def build_features(matches):
             st.played, st.pts, st.gf, st.ga = st.played + 1, st.pts + m["pts"], st.gf + gf, st.ga + ga
             st.last_date = r.match_dt
         h2h[frozenset((home, away))].append((home, hg, ag))
+        recent.append("H" if hg > ag else "D" if hg == ag else "A")
 
     feats = pd.DataFrame(rows)
     out = df.drop(columns=["match_dt", "is_played"]).merge(feats, on="match_id", how="left")
@@ -171,7 +191,7 @@ def build_features(matches):
 
 def feature_columns(out):
     return [c for c in out.columns if c not in ID_COLS + TARGETS and
-            (c in {"h2h_matches", "h2h_home_points", "h2h_home_goal_diff", "position_diff"} or
+            (c in {"h2h_matches", "h2h_home_points", "h2h_home_goal_diff", "position_diff", "league_home_adv380"} or
              c.startswith(("home_elo", "away_elo", "elo_", "odds_", "diff_", "home_position", "away_position")) or
              any(c == f"{s}_{k}" for s in ("home", "away") for k in FORM_KEYS) or
              c in {"home_home_points5", "home_home_goals_for5", "home_home_goals_against5",
@@ -198,9 +218,8 @@ def main():
     out = build_features(matches)
     cols = feature_columns(out)
     final = out[ID_COLS + cols + TARGETS].copy()
-    ints = ["gameweek", "home_goals", "away_goals", "home_position", "away_position", "position_diff",
-            "home_rest_days", "away_rest_days"] + \
-        [f"{s}_{k}" for s in ("home", "away") for k in ("wins5", "draws5", "losses5", "played")]
+    ints = ["gameweek", "home_goals", "away_goals", "home_position", "away_position", "position_diff"] + \
+        [f"{s}_{k}" for s in ("home", "away") for k in COUNT_KEYS]
     final[ints] = final[ints].apply(lambda s: pd.to_numeric(s, errors="coerce").round().astype("Int64"))
     final = final.sort_values(["status", "season", "date", "kickoff_time"], ascending=[True, True, True, True],
                               key=lambda s: s.map({"played": 0, "upcoming": 1}) if s.name == "status" else s,

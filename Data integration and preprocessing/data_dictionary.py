@@ -49,7 +49,8 @@ MATCH_COLUMNS = {
     "{side}_possession": ("Tỉ lệ kiểm soát bóng của {s}", "%", "FotMob", POST),
     "{side}_big_chances": ("Số tình huống ngon ăn (big chance) {s} tạo ra", "lần", "FotMob", POST),
     "{side}_big_chances_missed": ("Số tình huống ngon ăn {s} bỏ lỡ", "lần", "FotMob", POST),
-    "{side}_shots_inside_box": ("Số cú sút trong vòng cấm của {s}", "cú sút", "FotMob", POST),
+    "{side}_shots_inside_box": ("Số cú sút trong vòng cấm của {s} (định nghĩa FotMob: trong + ngoài vòng cấm có thể "
+                                "lệch ±1–2 so với `shots` của football-data)", "cú sút", "FotMob", POST),
     "{side}_shots_outside_box": ("Số cú sút ngoài vòng cấm của {s}", "cú sút", "FotMob", POST),
     "{side}_passes": ("Tổng số đường chuyền của {s}", "đường chuyền", "FotMob", POST),
     "{side}_accurate_passes": ("Số đường chuyền chính xác của {s}", "đường chuyền", "FotMob", POST),
@@ -122,12 +123,29 @@ FEATURE_COLUMNS = {
     "{side}_ppg": ("Điểm/trận của {s} từ đầu mùa", "0 … 3", PRE),
     "{side}_goals_for_pg": ("Bàn thắng/trận của {s} từ đầu mùa", "bàn", PRE),
     "{side}_goals_against_pg": ("Bàn thua/trận của {s} từ đầu mùa", "bàn", PRE),
-    "{side}_rest_days": ("Số ngày nghỉ của {s} kể từ trận Premier League trước", "ngày", PRE),
+    "{side}_rest_days": ("Số ngày nghỉ của {s} kể từ trận trước **trong cùng mùa**; trống ở trận đầu mùa "
+                         "(khoảng cách khi đó là kỳ nghỉ hè hoặc thời gian đá ngoài Premier League)", "ngày", PRE),
+    "{side}_window_n5": ("Số trận thực có trong cửa sổ phong độ của {s} (< 5 ở đầu dữ liệu hoặc với đội mới); "
+                         "các trung bình `*5` dựa trên đúng số trận này", "0 … 5", PRE),
+    "{side}_xg_n5": ("Số trận trong cửa sổ phong độ của {s} có xG (Understat); `xg5`, `xga5` là trung bình của "
+                     "đúng số trận này, trống khi bằng 0", "0 … 5", PRE),
+    "{side}_fm_n5": ("Số trận trong cửa sổ phong độ của {s} có số liệu FotMob (kiểm soát bóng); các chỉ số FotMob "
+                     "chi tiết (big chances, xGOT…) có thể dựa trên ít trận hơn", "0 … 5", PRE),
+    "{side}_form_age_days": ("Số ngày từ trận cũ nhất trong cửa sổ phong độ của {s} đến trận này; lớn (hàng trăm, "
+                             "hàng nghìn ngày) khi đội trở lại Premier League sau một hay nhiều mùa vắng mặt, "
+                             "tức phong độ `*5` đã cũ", "ngày", PRE),
+    "{side}_promoted": ("1 nếu {s} không đá Premier League mùa trước (đội mới lên hạng), 0 nếu có; "
+                        "trống ở mùa 2000/01", "0 / 1", PRE),
+    "league_home_adv380": ("Lợi thế sân nhà của cả giải ở thời điểm đó: tỉ lệ chủ nhà thắng − tỉ lệ khách thắng "
+                           "trong 380 trận gần nhất trước trận này (≈ một mùa); thấp ở giai đoạn không khán giả "
+                           "2020/21; trống khi chưa đủ 380 trận (mùa 2000/01)", "−1 … 1", PRE),
     "h2h_matches": ("Số lần hai đội gặp nhau được tính (tối đa 5 lần gần nhất)", "0 … 5", PRE),
     "h2h_home_points": ("Điểm trung bình của đội nhà trong các lần gặp đó", "0 … 3", PRE),
     "h2h_home_goal_diff": ("Hiệu số trung bình của đội nhà trong các lần gặp đó", "bàn", PRE),
-    "odds_{o}_prob": ("Xác suất {O} ngụ ý từ kèo mở (trung bình thị trường, thiếu thì Bet365), đã bỏ biên nhà cái",
-                      "0 … 1", PRE),
+    "odds_{o}_prob": ("Xác suất {O} ngụ ý từ kèo trung bình thị trường của football-data (cột `Avg`/`BbAv`, thiếu "
+                      "thì Bet365), đã bỏ biên nhà cái. Đây không phải kèo chốt; theo `notes.txt` của football-data, "
+                      "kèo được thu chiều thứ Sáu (trận cuối tuần) hoặc chiều thứ Ba (trận giữa tuần). "
+                      "Trống ở 2000/01–2001/02 và ở mọi trận sắp đá", "0 … 1", PRE),
     "diff_points5": ("`home_points5 − away_points5`", "", PRE),
     "diff_goals_for5": ("`home_goals_for5 − away_goals_for5`", "", PRE),
     "diff_goals_against5": ("`home_goals_against5 − away_goals_against5`", "", PRE),
@@ -255,7 +273,17 @@ E = 1 / (1 + 10^((Elo_khách − Elo_nhà − 65) / 400)); hệ số cách biệ
   tình huống ngon ăn, sút trong vòng cấm, chuyền, tắc bóng… từ 2016/17; xG, xGOT FotMob từ 2020/21;
   chạm bóng trong vòng cấm đủ từ 2024/25 (khoảng 70–90 % các mùa 2020/21–2023/24). Các đặc trưng `*5` từ FotMob
   trống khi 5 trận trước không có số liệu – nên huấn luyện mô hình dùng chúng trên dữ liệu từ 2016/17.
+  Một chỉ số FotMob chỉ được giữ ở mùa mà FotMob công bố nó cho ≥ 50 % số trận (quy tắc R12).
+- Nguồn: mùa đang diễn ra lấy từ đầu ra của crawler trên Hugging Face (`2026_2027_new/`) ở một revision cố định;
+  `data/clean/source_manifest.json` ghi revision, đường dẫn và SHA256 từng file – cùng khóa với Raw Storage.
 - `provisional = True`: kết quả tạm (chỉ có tỉ số + xG), sẽ được thay khi football-data cập nhật.
+- **Kèo và trận sắp đá:** dòng `upcoming` dựng từ lịch FPL nên `odds_*_prob` luôn trống. Mô hình dùng để dự đoán
+  vòng tới không được dựa vào kèo; kèo chỉ dùng làm mốc so sánh trên các trận đã đá.
+- **Độ tin cậy của phong độ** (theo báo cáo EDA): `window_n5`, `xg_n5`, `fm_n5` cho biết mỗi trung bình `*5` dựa trên
+  bao nhiêu trận; `form_age_days` và `promoted` đánh dấu đội trở lại giải với phong độ cũ. Dùng chúng để lọc
+  (ví dụ chỉ huấn luyện trên `xg_n5 ≥ 3` khi thử xG) hoặc làm đặc trưng, và để phân tích độ nhạy.
+- Hai mùa 2003/04, 2004/05 thiếu 45 trận mỗi mùa trong nguồn gốc nên vị trí BXH, `ppg` của các mùa này chỉ gần đúng;
+  `matches.csv` có cột `season_complete` để loại khi cần.
 - Quy tắc làm sạch và mọi ô đã sửa: `data/clean/cleaning_log.csv`, `clean_report.json`.
 """
     OUTPUT.write_text(doc, encoding="utf-8")
